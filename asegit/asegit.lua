@@ -1,9 +1,9 @@
 --[[
 Aseprite Git Integration Script (File-Centric with Auto-Move/Delete)
-Features:
+Feature:
 - Creates a subfolder named after the active file, saves the file into it,
-  deletes the original file, and initializes a dedicated Git repository. (⚠️ Use with caution!)
-- View Git log history for the currently active Aseprite file.
+  deletes the original file, and initializes a dedicated Git repository for that file.
+  (⚠️ Use with caution!)
 --]]
 
 -- Helper function to extract directory path from a full file path
@@ -28,6 +28,7 @@ local function folderIsValidGitRepo(path)
 end
 
 -- Helper function to run a shell command in a specific directory and capture output
+-- (Kept as it's used for git status check within moveAndInitGitForCurrentFile)
 local function getCommandOutputInDir(directory, command)
   if not directory then return nil, "Directory not specified." end
   local fullCommand
@@ -88,20 +89,7 @@ local function createDirectory(dirPath)
     return (os.execute(checkCmd) == true or os.execute(checkCmd) == 0)
 end
 
-
--- Helper function to get relative path
-local function getRelativePath(basePath, fullPath)
-  if not basePath or not fullPath then return nil end
-  basePath = basePath:gsub("\\", "/")
-  fullPath = fullPath:gsub("\\", "/")
-  if basePath:sub(-1) ~= "/" then basePath = basePath .. "/" end
-  if fullPath:lower():sub(1, #basePath) == basePath:lower() then
-    return fullPath:sub(#basePath + 1)
-  else
-    return nil
-  end
-end
-
+-- Removed getRelativePath function as it's no longer needed
 
 -- ========================================================================
 -- == Command: Move Current File to Subfolder & Initialize Git ==
@@ -129,7 +117,7 @@ local function moveAndInitGitForCurrentFile()
     text = "This will:\n" ..
            "1. Create folder: '" .. newDir .. "'\n" ..
            "2. Save file copy to: '" .. newPath .. "'\n" ..
-           "3. DELETE original file: '" .. oldPath .. "'\n" .. -- Explicitly mention deletion
+           "3. DELETE original file: '" .. oldPath .. "'\n" ..
            "4. Initialize Git repository in the new folder.\n\n" ..
            "⚠️ This action moves and deletes files. Proceed?",
     buttons = {"Yes, Move/Delete and Init", "Cancel"}
@@ -142,7 +130,6 @@ local function moveAndInitGitForCurrentFile()
 
   -- 4. Check if the target directory already exists and is a Git repo
   if folderIsValidGitRepo(newDir) then
-      -- (Logic for handling existing repo remains the same as before)
       local checkFileCmd
       if package.config:sub(1,1) == "\\" then
           checkFileCmd = string.format('if exist "%s" (exit 0) else (exit 1)', newPath:gsub("/", "\\"))
@@ -151,6 +138,7 @@ local function moveAndInitGitForCurrentFile()
       end
       if (os.execute(checkFileCmd) == true or os.execute(checkFileCmd) == 0) then
           local gitStatusCmd = string.format('git status --porcelain -- "%s"', currentFileName:gsub('"', '\\"'))
+          -- Use getCommandOutputInDir here to check status
           local statusOutput, _ = getCommandOutputInDir(newDir, gitStatusCmd)
           if statusOutput ~= nil and statusOutput ~= "" then
               app.alert("It seems this file already exists in the target Git repository ('" .. newDir .. "') and is tracked.")
@@ -199,41 +187,28 @@ local function moveAndInitGitForCurrentFile()
 
   if not savedSuccessfully then
     -- Attempt recovery
-    sprite.filename = oldPath -- Restore internal filename pointer
+    sprite.filename = oldPath
     app.alert("Error: Failed to save file to '" .. newPath .. "'.\nOperation aborted. Your file should still be at the original location:\n'" .. oldPath .. "'")
-    -- Try to remove the created directory if it's likely empty
-    os.execute(string.format('rmdir "%s"', newDir:gsub("/", "\\"))) -- Windows
-    os.execute(string.format('rmdir "%s"', newDir)) -- Unix-like
+    os.execute(string.format('rmdir "%s"', newDir:gsub("/", "\\")))
+    os.execute(string.format('rmdir "%s"', newDir))
     return
   end
 
-  -- <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-  -- == NEW: Attempt to delete the original file ==
+  -- Attempt to delete the original file
   local originalFileDeleted = false
   local deleteWarning = nil
-
-  -- Construct delete command based on OS
   local deleteCmd
   if package.config:sub(1,1) == "\\" then
-      -- Windows: use del command
       deleteCmd = string.format('del "%s"', oldPath:gsub("/", "\\"))
   else
-      -- macOS/Linux: use rm command
       deleteCmd = string.format('rm "%s"', oldPath)
   end
-
-  -- Execute the delete command
-  -- print("Attempting to delete original file: " .. deleteCmd) -- Debug
   local deleteResult = os.execute(deleteCmd)
   originalFileDeleted = (deleteResult == true or deleteResult == 0)
-
   if not originalFileDeleted then
-      -- Store a warning message if deletion failed
       deleteWarning = "\n\nWARNING: Could not delete the original file at:\n'" .. oldPath .. "'"
-      print("Warning: Failed to delete original file: " .. oldPath) -- Log warning to console
+      print("Warning: Failed to delete original file: " .. oldPath)
   end
-  -- >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
 
   -- 7. Initialize Git Repository in the new directory
   if runCommandInDir(newDir, 'git init', 'Initialize Git Repository') then
@@ -242,18 +217,16 @@ local function moveAndInitGitForCurrentFile()
       local commitMsg = "Initial commit: Add " .. currentFileName
       local commitCmd = string.format('git commit -m "%s"', commitMsg:gsub('"', '\\"'))
       if runCommandInDir(newDir, commitCmd, 'Initial Commit') then
-          -- Append deletion warning to the success message if needed
           local finalMessage = "Success!\nFile saved to: '" .. newPath .. "'\nGit repository initialized and file tracked."
           if deleteWarning then
               finalMessage = finalMessage .. deleteWarning
           elseif originalFileDeleted then
-               finalMessage = finalMessage .. "\nOriginal file deleted." -- Confirm deletion
+               finalMessage = finalMessage .. "\nOriginal file deleted."
           end
           app.alert(finalMessage)
       end
     end
   else
-      -- Git init failed, but file was moved/saved and original might be deleted.
       local criticalErrorMsg = "CRITICAL ERROR: File was saved to '" .. newPath .. "', but failed to initialize Git repository."
       if originalFileDeleted then
           criticalErrorMsg = criticalErrorMsg .. "\nOriginal file WAS DELETED."
@@ -267,65 +240,7 @@ local function moveAndInitGitForCurrentFile()
   end
 end
 
-
--- ====================================================================
--- == Command: View Git Log for the Currently Active File ==
---    (No changes needed here, should work with the new file location)
--- ====================================================================
-local function showCurrentFileGitLogDialog()
-  local sprite = app.sprite
-  if not sprite then app.alert("No active file is open."); return end
-  local currentFilePath = sprite.filename
-  if not currentFilePath or currentFilePath == "" then app.alert("Active file seems unsaved or path is invalid."); return end
-  local currentFileName = currentFilePath:match("([^/\\]+)$")
-  local currentDir = extractFolder(currentFilePath)
-
-  -- Auto-detect Git repository
-  local repoDir = nil
-  local tempDir = currentDir
-  while tempDir do
-      if folderIsValidGitRepo(tempDir) then
-          repoDir = tempDir
-          break
-      end
-      local parentDir = extractFolder(tempDir)
-      if not parentDir or parentDir == tempDir then break end
-      tempDir = parentDir
-  end
-
-  if not repoDir then
-      app.alert("Could not find a Git repository containing this file ('" .. currentFilePath .. "').\nHas it been initialized using 'Move File & Init Git'?")
-      return
-  end
-
-  local relativePath = getRelativePath(repoDir, currentFilePath)
-  if not relativePath then
-      if repoDir:gsub("\\", "/") == currentDir:gsub("\\", "/") then
-           relativePath = currentFileName
-      else
-          app.alert("Error: Could not determine file's relative path within the repository '" .. repoDir .. "'.")
-          return
-      end
-  end
-
-  local gitLogCmd = string.format('git log --oneline --graph --decorate -n 50 -- "%s"', relativePath:gsub('"', '\\"'))
-  local output, err = getCommandOutputInDir(repoDir, gitLogCmd)
-
-  if not output then
-    app.alert("Failed to get Git log for the file.\nError: " .. (err or "Unknown") .. "\nIs Git installed and in PATH?")
-    return
-  end
-  if output == "" then
-    output = "(No Git history found for this specific file in repository '" .. repoDir .. "')"
-  end
-
-  local dlg = Dialog("Git Log for: " .. currentFileName)
-  dlg:label{ label = "Recent Commits for '" .. relativePath .. "' (Max 50):" }
-  dlg:separator()
-  dlg:textbox{ id="log_output", text=output, readonly=true }
-  dlg:button{ text="OK" }
-  dlg:show()
-end
+-- Removed showCurrentFileGitLogDialog function
 
 -- ======================================================
 -- == Register Commands ==
@@ -333,6 +248,7 @@ end
 function init(plugin)
   local scriptGroup = "file_scripts"
 
+  -- Command to move file to subfolder and initialize Git
   plugin:newCommand{
     id = "MoveAndInitGitForFile",
     title = "Move File & Init Git", -- Keep title descriptive
@@ -340,10 +256,5 @@ function init(plugin)
     onclick = moveAndInitGitForCurrentFile
   }
 
-  plugin:newCommand{
-    id = "asegit",
-    title = "View File Git Log",
-    group = scriptGroup,
-    onclick = showCurrentFileGitLogDialog
-  }
+  -- Removed registration for "asegit" (View File Git Log) command
 end
