@@ -6,6 +6,7 @@
 - Open Temp aseprite 
 
 ## Preview
+![preview](https://github.com/user-attachments/assets/5e44c0b7-b9c5-42b4-b668-fc936bff65ef)
 
 
 ## 🧩 Installation
