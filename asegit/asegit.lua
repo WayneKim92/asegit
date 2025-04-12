@@ -1,7 +1,7 @@
 --[[
 Aseprite Git Integration Script (File-Centric with Auto-Move/Delete & Commit)
 Features:
-- Move File & Init Git: Creates a subfolder, moves the file, deletes the original, and initializes Git.
+- Initialize Git for This File: Creates a subfolder, moves the file, deletes the original, and initializes Git.
   Checks and stops BEFORE confirmation if the file is ALREADY inside an existing Git repo. (⚠️ Use with caution!)
 - Git Commit This File: Commits changes for the currently active Aseprite file.
 --]]
@@ -11,11 +11,8 @@ local function extractFolder(path)
   if not path then return nil end
   path = path:gsub("\\", "/")
   local match = path:match("^(.*)/[^/]+$")
-  -- Handle root directory case (e.g., C:/file.ase -> C:/)
   if not match and path:match("^[a-zA-Z]:/$") then return path end
-  -- Handle root directory case (e.g., /file.ase -> /)
   if not match and path:match("^/$") then return path end
-  -- Handle case where path is just a filename (no slashes) -> return nil or "."? Let's return nil.
   if not match and not path:match("/") then return nil end
   return match
 end
@@ -109,9 +106,9 @@ end
 
 
 -- ========================================================================
--- == Command: Move Current File to Subfolder & Initialize Git ==
+-- == Command: Initialize Git Repository for the Current Single File ==
 -- ========================================================================
-local function moveAndInitGitForCurrentFile()
+local function initializeGitForCurrentFile() -- Renamed function to match title conceptually
   -- 1. Get Active Sprite and File Path
   local sprite = app.sprite
   if not sprite then app.alert("No active file is open."); return end
@@ -124,35 +121,26 @@ local function moveAndInitGitForCurrentFile()
   local parentDir = extractFolder(oldPath)
   if not parentDir then app.alert("Error: Could not determine the directory of the current file."); return end
 
-  -- 2. Define New Paths (still needed for later steps)
+  -- 2. Define New Paths
   local newDir = parentDir:gsub("\\", "/") .. "/" .. baseName
   local newPath = newDir .. "/" .. currentFileName
 
-  -- ================== CORRECTED PRE-CHECK START ==================
   -- 3. Check if the CURRENT file's directory (or ancestors) is ALREADY a Git repo
   local existingRepoDir = nil
   local tempDir = parentDir
   while tempDir do
-      -- app.alert("Checking for repo in: " .. tempDir) -- Deeper debug if needed
-      if folderIsValidGitRepo(tempDir) then
-          existingRepoDir = tempDir
-          break
-      end
+      if folderIsValidGitRepo(tempDir) then existingRepoDir = tempDir; break end
       local nextParentDir = extractFolder(tempDir)
-      -- Stop if we reached the root or extractFolder failed
       if not nextParentDir or nextParentDir == tempDir then break end
       tempDir = nextParentDir
   end
 
   if existingRepoDir then
-      -- Found an existing Git repo containing the current file's location
-      app.alert("The current file's directory ('" .. parentDir .. "') is already inside a Git repository located at:\n'" .. existingRepoDir .. "'.\n\n'Move File & Init Git' cannot proceed as it would create a nested repository.\nUse 'Git Commit This File' to commit changes within the existing repository.")
-      return -- Stop execution
+      app.alert("The current file's directory ('" .. parentDir .. "') is already inside a Git repository located at:\n'" .. existingRepoDir .. "'.\n\nThis command cannot proceed.\nUse 'Git Commit This File' to commit changes within the existing repository.")
+      return
   end
-  -- ================== CORRECTED PRE-CHECK END ==================
 
-
-  -- 4. Confirmation Dialog (Only shown if file is NOT inside an existing repo)
+  -- 4. Confirmation Dialog
   local confirmation = app.alert{
     title = "Confirm File Move & Git Init",
     text = "This will attempt to:\n" ..
@@ -170,26 +158,16 @@ local function moveAndInitGitForCurrentFile()
   end
 
   -- 5. Check if the target sub-directory exists as a plain folder
-  -- (This check is less critical now, but can prevent errors if a non-git folder with the target name exists)
   local checkDirCmd
-  if package.config:sub(1,1) == "\\" then
-      checkDirCmd = string.format('if exist "%s\\" (exit 0) else (exit 1)', newDir:gsub("/", "\\"))
-  else
-      checkDirCmd = string.format('[ -d "%s" ]', newDir)
-  end
-  -- Note: folderIsValidGitRepo was already checked for newDir via the pre-check logic path - it should be false here.
-  -- So we just check for directory existence.
+  if package.config:sub(1,1) == "\\" then checkDirCmd = string.format('if exist "%s\\" (exit 0) else (exit 1)', newDir:gsub("/", "\\"))
+  else checkDirCmd = string.format('[ -d "%s" ]', newDir) end
   if (os.execute(checkDirCmd) == true or os.execute(checkDirCmd) == 0) then
       app.alert("Error: Target folder ('" .. newDir .. "') already exists but is not a Git repository.\nPlease check the folder, rename/remove it, or manage it manually.")
-      return -- Stop execution
-  end
-
-
-  -- If we reach here, the target directory does not exist. Create it.
-  if not createDirectory(newDir) then
-      app.alert("Error: Failed to create the target directory: '" .. newDir .. "'")
       return
   end
+
+  -- If we reach here, the target directory does not exist. Create it.
+  if not createDirectory(newDir) then app.alert("Error: Failed to create the target directory: '" .. newDir .. "'"); return end
 
   -- 6. Attempt to Save the File to the New Location
   sprite.filename = newPath
@@ -210,7 +188,7 @@ local function moveAndInitGitForCurrentFile()
   local originalFileDeleted = false
   local deleteWarning = nil
   local deleteCmd
-  if package.config:sub(1,1) == "\\" then deleteCmd = string.format('del /F /Q "%s"', oldPath:gsub("/", "\\")) -- Added /F for force
+  if package.config:sub(1,1) == "\\" then deleteCmd = string.format('del /F /Q "%s"', oldPath:gsub("/", "\\"))
   else deleteCmd = string.format('rm -f "%s"', oldPath) end
   local deleteResult = os.execute(deleteCmd)
   originalFileDeleted = (deleteResult == true or deleteResult == 0)
@@ -262,7 +240,8 @@ local function gitCommitCurrentFile()
         if not parentDir or parentDir == tempDir then break end
         tempDir = parentDir
     end
-    if not repoDir then app.alert("Could not find a Git repository containing this file ('" .. currentFilePath .. "').\nHas it been initialized using 'Move File & Init Git'?"); return end
+    if not repoDir then app.alert("Could not find a Git repository containing this file ('" .. currentFilePath .. "').\nHas it been initialized using 'Initialize Git for This File'?")
+    return end -- Added user feedback for clarity
 
     -- 3. Get Relative Path
     local relativePath = getRelativePath(repoDir, currentFilePath)
@@ -284,13 +263,7 @@ local function gitCommitCurrentFile()
     local gitStatusCmd = string.format('git status --porcelain -- "%s"', relativePath:gsub('"', '\\"'))
     local statusOutput, statusErr = getCommandOutputInDir(repoDir, gitStatusCmd)
     if statusOutput == nil then app.alert("Failed to get Git status for the file.\nError: " .. (statusErr or "Unknown")); return end
-    -- If output is empty OR contains only '??' (untracked, but we will add it)
-    -- We should commit if there's *any* difference or if it's untracked. Commit shouldn't run only if it's tracked & unmodified.
-    if statusOutput == "" then
-       app.alert("No changes detected for '" .. currentFileName .. "' compared to the last commit.")
-       return
-    end
-
+    if statusOutput == "" then app.alert("No changes detected for '" .. currentFileName .. "' compared to the last commit."); return end
 
     -- Stage the file before commit dialog
     local addCmd = string.format('git add "%s"', relativePath:gsub('"', '\\"'))
@@ -322,9 +295,9 @@ function init(plugin)
 
   plugin:newCommand{
     id = "MoveAndInitGitForFile",
-    title = "Move File & Init Git",
+    title = "Initialize Git for This File", -- <<< Changed Title
     group = scriptGroup,
-    onclick = moveAndInitGitForCurrentFile
+    onclick = initializeGitForCurrentFile -- Changed function name to match title
   }
 
   plugin:newCommand{
@@ -333,4 +306,4 @@ function init(plugin)
     group = scriptGroup,
     onclick = gitCommitCurrentFile
   }
-end
+end₩
