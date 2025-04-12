@@ -133,6 +133,28 @@ local function getRelativePath(basePath, fullPath)
     end
 end
 
+-- 임시 파일 경로 생성 (간단한 예시)
+local function getTemporaryFilePath(baseName, commitHash, extension)
+    local tmpDir
+    -- OS별 임시 디렉토리 경로 확인 (더 견고한 방법 필요 시 라이브러리 사용 고려)
+    if package.config:sub(1,1) == "\\" then
+        tmpDir = os.getenv("TEMP") or os.getenv("TMP") or "C:\\Temp"
+    else
+        tmpDir = os.getenv("TMPDIR") or "/tmp"
+    end
+    -- 폴더가 없으면 생성 시도 (createDirectory 함수 재사용)
+    createDirectory(tmpDir) -- createDirectory는 이미 존재하면 실패하지 않아야 함
+
+    -- 파일 이름 생성 (중복 가능성 최소화)
+    local safeBaseName = baseName:gsub("[^a-zA-Z0-9_.-]", "_") -- 파일명에 안전하지 않은 문자 제거
+    local shortHash = commitHash:sub(1, 7) -- 짧은 해시 사용
+    local timestamp = os.time()
+    -- 경로 구분자 확인
+    local sep = (package.config:sub(1,1) == "\\") and "\\" or "/"
+
+    return string.format("%s%s%s_%s_%s.%s", tmpDir, sep, safeBaseName, shortHash, timestamp, extension)
+end
+
 -- ========================================================================
 -- == Command: Initialize Git Repository for the Current Single File ==
 -- ========================================================================
@@ -530,6 +552,192 @@ local function gitCommitCurrentFile()
     end
 end
 
+-- ========================================================================
+-- == Command: Show Git Log and Preview ==
+-- ========================================================================
+local function showGitLogAndPreview()
+  -- 1. Get Active Sprite and File Path
+  local sprite = app.sprite
+  if not sprite then app.alert("No active file is open."); return end
+  local currentFilePath = sprite.filename
+  if not currentFilePath or currentFilePath == "" then app.alert("The active file must be saved first."); return end
+  local currentFileName = currentFilePath:match("([^/\\]+)$")
+  if not currentFileName then app.alert("Error: Could not extract filename."); return end
+  local currentFileExt = currentFileName:match("%.([^.]+)$") or "aseprite" -- 확장자 추출, 없으면 기본값
+
+  local currentDir = extractFolder(currentFilePath)
+  if not currentDir then app.alert("Error: Could not determine the directory of the current file."); return end
+
+  -- 2. Find Git Repository Root (gitCommitCurrentFile 로직 재사용)
+  local repoDir = nil
+  local tempDir = currentDir
+  while tempDir do
+      if folderIsValidGitRepo(tempDir) then
+           local gitPath = tempDir:gsub("\\", "/") .. "/.git"
+           local checkGitTypeCmd
+           if package.config:sub(1,1) == "\\" then
+               checkGitTypeCmd = string.format('if exist "%s\\" (echo directory) else (if exist "%s" (echo file) else (echo notfound))', gitPath:gsub("/", "\\"), gitPath:gsub("/", "\\"))
+           else
+               checkGitTypeCmd = string.format('if [ -d "%s" ]; then echo directory; elif [ -f "%s" ]; then echo file; else echo notfound; fi', gitPath, gitPath)
+           end
+           -- Use a function that captures output, like getCommandOutputInDir
+           local output, err = getCommandOutputInDir(tempDir, checkGitTypeCmd) -- Use tempDir as context
+           if output and output:match("directory") then
+              repoDir = tempDir
+              break
+           end
+      end
+      local parentDir = extractFolder(tempDir)
+      if not parentDir or parentDir == tempDir then break end
+      tempDir = parentDir
+  end
+
+  if not repoDir then
+      app.alert("Could not find a standard Git repository (.git directory) containing this file.")
+      return
+  end
+
+  -- 3. Get Relative Path (gitCommitCurrentFile 로직 재사용)
+  local relativePath = getRelativePath(repoDir, currentFilePath)
+  if not relativePath then
+      if repoDir:gsub("\\", "/") == currentDir:gsub("\\", "/") then
+           relativePath = currentFileName
+      else
+          app.alert("Error: Could not determine the file's relative path within the Git repository.")
+          return
+      end
+  end
+
+  -- 4. Execute git log for the specific file
+  -- Format: Hash<TAB>AuthorName<TAB>ShortDate<TAB>Subject
+  -- Using %x09 for TAB as delimiter
+  local logFormat = "%H%x09%an%x09%ad%x09%s"
+  -- Limit to 50 entries for performance, track file (if git supports --follow well)
+  local logCmd = string.format('git log -n 50 --pretty=format:"%s" --date=short -- "%s"',
+                               logFormat, relativePath:gsub('"', '\\"'))
+  local logOutput, logErr = getCommandOutputInDir(repoDir, logCmd)
+
+  if not logOutput or logOutput == "" then
+      app.alert("Could not retrieve Git log for this file.\n" .. (logErr or "No history found or Git error."))
+      return
+  end
+
+  -- 5. Parse Log Output
+  local commits = {}
+  local listItems = {}
+  -- Split by newline, then by tab
+  for line in logOutput:gmatch("[^\r\n]+") do
+      local parts = {}
+      for part in line:gmatch("[^\t]+") do
+          table.insert(parts, part)
+      end
+      if #parts >= 4 then -- Expecting Hash, Author, Date, Subject
+          local commitData = {
+              hash = parts[1],
+              author = parts[2],
+              date = parts[3],
+              subject = parts[4]
+          }
+          table.insert(commits, commitData)
+          -- Format for listbox: "Date - Subject (Author)"
+          table.insert(listItems, string.format("%s - %s (%s)", commitData.date, commitData.subject, commitData.author))
+      else
+          print("Warning: Skipping malformed log line: " .. line)
+      end
+  end
+
+  if #commits == 0 then
+      app.alert("No parsable commit history found for this file.")
+      return
+  end
+
+  -- 6. Show Dialog with Log
+  local dlg = Dialog("Git Log: " .. currentFileName)
+  dlg:label{ text="Select a commit to preview:" }
+  dlg:combobox{ id="commitlist", options=listItems }
+  dlg:separator{}
+  dlg:button{ id="preview", text="Preview Selected" }
+  dlg:button{ id="cancel", text="Cancel" }
+  dlg:show()
+
+  -- 7. Handle Dialog Result
+  local data = dlg.data
+  if data.preview and data.commitlist and data.commitlist > 0 then 
+      local selectedIndex = data.commitlist
+      local selectedCommit = commits[selectedIndex]
+      if not selectedCommit then
+           app.alert("Error: Invalid selection.")
+           return
+      end
+
+      -- 8. Get file content at the selected commit and save to temp file
+      local tempFilePath = getTemporaryFilePath(currentFileName, selectedCommit.hash, currentFileExt)
+      if not tempFilePath then
+          app.alert("Error: Could not generate a temporary file path.")
+          return
+      end
+
+      -- Use redirection (>) for safer binary file handling
+      local showCmd = string.format('git show "%s:%s"',
+                                    selectedCommit.hash,
+                                    relativePath:gsub('"', '\\"')) -- Path inside repo
+      local redirectCmd
+      local tempFilePathShell = tempFilePath:gsub('"', '\\"') -- Escape quotes for shell
+
+      if package.config:sub(1,1) == "\\" then
+          -- Windows: Use temporary file for command to handle potential redirection issues with complex commands/paths
+          local cmdFilePath = os.tmpname() .. ".cmd"
+          local cmdFile = io.open(cmdFilePath, "w")
+          if not cmdFile then app.alert("Failed to create temporary command file."); return end
+          -- Need to change directory within the command file
+          cmdFile:write(string.format('@echo off\ncd /d "%s"\n%s > "%s"\n', repoDir:gsub("/", "\\"), showCmd, tempFilePathShell))
+          cmdFile:close()
+          -- Execute the command file silently
+          local success = os.execute(string.format('cmd /c "%s"', cmdFilePath))
+          os.remove(cmdFilePath) -- Clean up command file
+          if not (success == true or success == 0) then
+              app.alert("Failed to retrieve file content from Git history (git show failed). Check console.")
+              return
+          end
+      else
+          -- POSIX: Direct redirection should be fine
+          redirectCmd = string.format('cd "%s" && %s > "%s"', repoDir, showCmd, tempFilePathShell)
+          local success = os.execute(redirectCmd)
+          if not (success == true or success == 0) then
+              app.alert("Failed to retrieve file content from Git history (git show failed). Check console.")
+              return
+          end
+      end
+
+      -- Check if the temp file was actually created and has content
+      local f = io.open(tempFilePath, "rb") -- Open in binary read mode to check size
+      if not f then
+          app.alert("Error: Failed to save historical version to temporary file: " .. tempFilePath)
+          return
+      end
+      local size = f:seek("end")
+      f:close()
+
+      if size == 0 then
+          app.alert("Error: Git retrieved an empty file for this commit. It might have been deleted or empty at that point.")
+          os.remove(tempFilePath) -- Clean up empty file
+          return
+      end
+
+      -- 9. Open the temporary file in Aseprite
+      app.open(tempFilePath)
+      -- Note: Automatic cleanup of tempFilePath is difficult here as Aseprite holds the file open.
+      -- Consider adding a separate command to clean up old preview files later.
+      app.alert("Previewing file from commit: " .. selectedCommit.hash:sub(1,7) .. "\nFile opened in a new tab: " .. tempFilePath .. "\n\nNOTE: This is a temporary file.")
+
+  elseif data.cancel then
+      -- User cancelled
+      -- app.alert("Operation cancelled.")
+  else
+      -- No selection or closed dialog
+  end
+end
+
 -- ======================================================
 -- == Register Commands ==
 -- ======================================================
@@ -548,6 +756,13 @@ function init(plugin)
         title = "Git Commit This File", -- Commits the currently open file in its repo
         group = scriptGroup,
         onclick = gitCommitCurrentFile
+    }
+
+    plugin:newCommand{
+        id = "GitShowLogAndPreview",
+        title = "Git Log & Preview File", -- Shows history and allows previewing past versions
+        group = scriptGroup,
+        onclick = showGitLogAndPreview
     }
 end
 
