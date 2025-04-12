@@ -1,0 +1,18 @@
+{
+  "name": "asegit",
+  "displayName": "Asegit",
+  "description": "Git GUI for Aseprite",
+  "version": "0.1.0",
+  "author": {
+    "name": "WayneKim92",
+    "email": "eunchan0817@gmail.com",
+    "url": "https://github.com/WayneKim92"
+  },
+  "license": "MIT",
+  "categories": ["Scripts"],
+  "contributes": {
+    "scripts": [
+      { "path": "./asegit.lua" }
+    ]
+  }
+}
