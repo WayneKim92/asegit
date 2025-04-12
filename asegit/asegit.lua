@@ -803,14 +803,14 @@ function init(plugin)
 
     plugin:newCommand{
         id = "MoveAndInitGitForFile",
-        title = "Initialize Git for This File", -- Creates subfolder, moves file, inits repo
+        title = "Initialize Git for Focused File", -- Creates subfolder, moves file, inits repo
         group = scriptGroup,
         onclick = initializeGitForCurrentFile
     }
 
     plugin:newCommand{
         id = "GitCommitCurrentFile",
-        title = "Git Commit This File", -- Commits the currently open file in its repo
+        title = "Git Commit Focused File", -- Commits the currently open file in its repo
         group = scriptGroup,
         onclick = gitCommitCurrentFile
     }
