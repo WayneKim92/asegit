@@ -152,7 +152,8 @@ local function getTemporaryFilePath(baseName, commitHash, extension)
     -- 경로 구분자 확인
     local sep = (package.config:sub(1, 1) == "\\") and "\\" or "/"
 
-    return string.format("%s%s%s_%s_%s.%s", tmpDir, sep, safeBaseName, shortHash, timestamp, extension)
+    -- !!!!! 수정: 파일 이름 앞에 "TEMP_" 추가 !!!!!
+    return string.format("%s%sTEMP_%s_%s_%s.%s", tmpDir, sep, safeBaseName, shortHash, timestamp, extension)
 end
 
 -- ========================================================================
@@ -220,13 +221,6 @@ local function initializeGitForCurrentFile()
     }
 
     -- Check the user's choice (1 = Yes, Proceed)
-    if confirmation ~= 1 then
-        app.alert("Operation cancelled by user.")
-        return
-    end
-
-    -- If the user clicked "Yes, Proceed", continue to the next steps...
-
     if confirmation ~= 1 then
         app.alert("Operation cancelled by user.")
         return
@@ -673,8 +667,8 @@ local function showGitLogAndPreview()
     -- 6. Show Dialog with Log
     local dlg = Dialog("Git Log: " .. currentFileName)
     dlg:label{
-        text = "Select a commit to preview:"
-    }
+        text = "Select a commit to view:"
+    } -- 레이블 텍스트 약간 수정
     dlg:combobox{
         id = "commitlist",
         options = listItems
@@ -682,7 +676,7 @@ local function showGitLogAndPreview()
     dlg:separator{}
     dlg:button{
         id = "preview",
-        text = "Preview Selected"
+        text = "Open Tempview Selected" -- !!!!! 수정: 버튼 텍스트 변경 !!!!!
     }
     dlg:button{
         id = "cancel",
@@ -692,7 +686,8 @@ local function showGitLogAndPreview()
 
     -- 7. Handle Dialog Result
     local data = dlg.data
-    -- selectedIndex가 유효한 숫자인지, 0보다 큰지 확인합니다.
+
+    -- Preview 버튼을 눌렀고, commitlist에 값이 있는지 확인 (이제 문자열 값임)
     if data.preview and data.commitlist then
 
         local selectedText = data.commitlist -- combobox에서 반환된 선택된 텍스트
@@ -717,7 +712,13 @@ local function showGitLogAndPreview()
                 return
             end
 
+            -- ==============================================================
+            -- !!!!! 여기서부터 기존의 미리보기 로직 (8번 단계 이후) 시작 !!!!!
+            -- selectedCommit.hash 등을 사용하여 임시 파일 생성 및 열기
+            -- ==============================================================
+
             -- 8. Get file content at the selected commit and save to temp file
+            -- getTemporaryFilePath 함수가 이제 "TEMP_" 접두사가 붙은 경로를 반환함
             local tempFilePath = getTemporaryFilePath(currentFileName, selectedCommit.hash, currentFileExt)
             if not tempFilePath then
                 app.alert("Error: Could not generate a temporary file path.")
@@ -775,11 +776,8 @@ local function showGitLogAndPreview()
             end
 
             -- 9. Open the temporary file in Aseprite
-            app.open(tempFilePath)
-            app.alert(
-                "Previewing file from commit: " .. selectedCommit.hash:sub(1, 7))
-            app.alert("File opened in a new tab: " ..tempFilePath)
-            app.alert("NOTE: This is a temporary file.")
+            app.open(tempFilePath) -- 파일 이름에 "TEMP_"가 포함되어 열림
+            app.alert("Opened temporary view for commit: " .. selectedCommit.hash:sub(1, 7))
         else
             -- 선택된 텍스트가 listItems에 없는 경우 (이론상 발생하기 어려움)
             app.alert("Error: Could not match selected item text to commit list.")
@@ -792,7 +790,7 @@ local function showGitLogAndPreview()
     else
         -- Preview 버튼 안 눌렀거나, data.commitlist가 nil/false인 경우 (예: 아무것도 선택 안함)
         if data.preview then
-            app.alert("Please select a commit from the list before clicking Preview.")
+            app.alert("Please select a commit from the list before clicking 'Open Tempview Selected'.") -- 버튼 이름 반영
         end
     end
 end
@@ -819,7 +817,7 @@ function init(plugin)
 
     plugin:newCommand{
         id = "GitShowLogAndPreview",
-        title = "Git Log & Preview File", -- Shows history and allows previewing past versions
+        title = "Git Log & Temp View File", -- !!!!! 수정: 메뉴 이름도 약간 수정 !!!!!
         group = scriptGroup,
         onclick = showGitLogAndPreview
     }
