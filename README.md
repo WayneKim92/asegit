@@ -1,4 +1,5 @@
 # Asegit is Git GUI for single aseprite file
+Manage your aseprite in just one file.
 
 ## Featues
 - Init git for only one aseprite file
